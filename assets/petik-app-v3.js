@@ -24,7 +24,7 @@
   const ui = {
     form: $('download-form'), url: $('source-url'), detected: $('detected-platform'), paste: $('paste-button'),
     videoTab: $('video-tab'), audioTab: $('audio-tab'), ambil: $('ambil-button'), status: $('status-area'),
-    result: $('result-card'), thumb: $('media-thumb'), thumbPlaceholder: $('thumbnail-placeholder'),
+    result: $('result-card'), preview: $('media-preview'), thumb: $('media-thumb'), thumbPlaceholder: $('thumbnail-placeholder'),
     platform: $('result-platform'), duration: $('result-duration'), title: $('result-title'), author: $('result-author'),
     modeSummary: $('mode-summary'), formatSummary: $('format-summary'), note: $('availability-note'),
     saveOpen: $('save-open'), saveLabel: $('save-label'), saveDialog: $('save-dialog'), saveDialogTitle: $('save-dialog-title'),
@@ -50,7 +50,7 @@
   const initialPreferences = readPreferences();
   const state = {
     mode: initialPreferences.mode, busy: false, media: null, candidates: [], apiIndex: -1,
-    downloadController: null, selectedQuality: initialPreferences.quality, history: readHistory(), currentTask: 0, lastApiUsed: ''
+    downloadController: null, inspectController: null, selectedQuality: initialPreferences.quality, history: readHistory(), currentTask: 0, lastApiUsed: ''
   };
   function savePreferences() { safeStorageSet(STORAGE.prefs, JSON.stringify({ mode: state.mode, quality: state.selectedQuality })); }
   function saveHistory(item) {
@@ -118,6 +118,11 @@
     ui.detected.textContent = url && platform !== 'other' ? `Terdeteksi: ${LABELS[platform]}` : '';
   }
   function timeoutSignal(ms) { return AbortSignal.timeout ? AbortSignal.timeout(ms) : undefined; }
+  function requestSignal(ms, externalSignal = null) {
+    const timed = timeoutSignal(ms);
+    if (externalSignal && timed && AbortSignal.any) return AbortSignal.any([externalSignal, timed]);
+    return externalSignal || timed;
+  }
   async function parseJson(response) { try { return await response.json(); } catch { return null; } }
   async function postJson(url, data, timeout = 45000, externalSignal = null) {
     const timed = timeoutSignal(timeout);
@@ -130,38 +135,72 @@
     });
     return { response, data: await parseJson(response) };
   }
-  async function noembed(url) {
+  async function noembed(url, externalSignal = null) {
     try {
-      const response = await fetch(`https://noembed.com/embed?url=${encodeURIComponent(url)}`, { signal: timeoutSignal(9000) });
+      const response = await fetch(`https://noembed.com/embed?url=${encodeURIComponent(url)}`, { signal: requestSignal(9000, externalSignal) });
       if (!response.ok) return {};
       const data = await response.json();
       return data.error ? {} : { title: data.title || '', author: data.author_name || '', thumbnail: data.thumbnail_url || '' };
     } catch { return {}; }
   }
   function isInspectSuccess(data) { return Boolean(data && data.success === true && data.status === 'ready'); }
-  async function inspectCandidate(base, url, platform, index) {
+  async function inspectCandidate(base, url, platform, index, externalSignal = null) {
     let response;
     try {
       response = await fetch(`${base}/api/inspect`, {
         method: 'POST', headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }), signal: timeoutSignal(60000)
+        body: JSON.stringify({ url }), signal: requestSignal(60000, externalSignal)
       });
-    } catch { return null; }
+    } catch (error) {
+      if (externalSignal?.aborted) throw error;
+      return null;
+    }
     const data = await parseJson(response);
     if (response.ok && isInspectSuccess(data)) {
       return { kind: 'native', base, index, platform: data.service || platform, data };
     }
-    // Older Render builds and standard Cobalt servers expose POST / but not /api/inspect.
+    // Cobalt-compatible APIs do not implement /api/inspect; identify them by their root descriptor.
     if (response.status !== 404 && response.status !== 405) return null;
     try {
-      const rootResponse = await fetch(`${base}/`, { headers: { 'Accept': 'application/json' }, signal: timeoutSignal(9000) });
+      const rootResponse = await fetch(`${base}/`, { headers: { 'Accept': 'application/json' }, signal: requestSignal(9000, externalSignal) });
       if (!rootResponse.ok) return null;
       const root = await parseJson(rootResponse);
       const services = root?.cobalt?.services;
       if (Array.isArray(services) && !services.some((service) => String(service).toLowerCase() === (SERVICE_MAP[platform] || platform))) return null;
       if (!root?.cobalt && !Array.isArray(services)) return null;
-      return { kind: 'legacy', base, index, platform, data: { title: '', author: '', thumbnail: '', videoOptions: DEFAULT_QUALITY, audioOptions: [{ id: 'best', label: 'MP3 · kualitas terbaik' }] } };
-    } catch { return null; }
+      // Ask the legacy extractor for a playable result so the older Cobalt fallback
+      // can still supply an inline preview, not only a disabled placeholder card.
+      try {
+        const legacy = await postJson(`${base}/`, {
+          url, videoQuality: 'max', downloadMode: 'auto', filenameStyle: 'pretty', alwaysProxy: false
+        }, 90000, externalSignal);
+        const payload = legacy.data || {};
+        const picker = Array.isArray(payload.picker) ? payload.picker : [];
+        const videoItem = picker.find((item) => /video/i.test(String(item.type || '')) && item.url);
+        const audioItem = picker.find((item) => /audio/i.test(String(item.type || '')) && item.url);
+        const directUrl = ['tunnel', 'redirect'].includes(payload.status) && payload.url ? payload.url : '';
+        const audioOnly = platform === 'soundcloud' || /\.(?:mp3|m4a|aac|wav|flac|ogg|opus)(?:$|[?#])/i.test(String(payload.filename || directUrl));
+        const rawPreviewUrl = videoItem?.url || (!audioOnly ? directUrl : '');
+        const previewUrl = rawPreviewUrl ? new URL(rawPreviewUrl, base).toString() : '';
+        const audioAvailable = Boolean(audioItem || audioOnly || payload.audio);
+        const videoAvailable = Boolean(videoItem || previewUrl || (payload.status === 'local-processing' && payload.output?.filename));
+        if (!legacy.response.ok || !['tunnel', 'redirect', 'picker', 'local-processing'].includes(payload.status) || (!videoAvailable && !audioAvailable)) return null;
+        return {
+          kind: 'legacy', base, index, platform,
+          data: {
+            title: payload.title || '', author: payload.author || '', thumbnail: videoItem?.thumb || payload.thumb || '',
+            previewUrl, videoOptions: videoAvailable ? DEFAULT_QUALITY : [],
+            audioOptions: (audioAvailable || videoAvailable) ? [{ id: 'best', label: 'MP3 · kualitas terbaik' }] : []
+          }
+        };
+      } catch (error) {
+        if (externalSignal?.aborted) throw error;
+      }
+      return { kind: 'legacy', base, index, platform, data: { title: '', author: '', thumbnail: '', videoOptions: [], audioOptions: [] } };
+    } catch (error) {
+      if (externalSignal?.aborted) throw error;
+      return null;
+    }
   }
   function youtubeId(url) {
     try {
@@ -183,12 +222,12 @@
     }));
     return { videos, audios, mode };
   }
-  async function inspectPiped(url) {
+  async function inspectPiped(url, externalSignal = null) {
     const id = youtubeId(url);
     if (!id) return null;
     for (const base of PIPED_APIS) {
       try {
-        const response = await fetch(`${base}/streams/${encodeURIComponent(id)}`, { headers: { 'Accept': 'application/json' }, signal: timeoutSignal(12000) });
+        const response = await fetch(`${base}/streams/${encodeURIComponent(id)}`, { headers: { 'Accept': 'application/json' }, signal: requestSignal(12000, externalSignal) });
         if (!response.ok) continue;
         const data = await response.json();
         if (data.error) continue;
@@ -206,7 +245,7 @@
     return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}` : `${minutes}:${String(secs).padStart(2, '0')}`;
   }
   function currentModeOptions() {
-    if (!state.media) return [];
+    if (!state.media || state.media.downloadUnavailable || state.media.kind === 'unsupported') return [];
     if (state.media.kind === 'native' || state.media.kind === 'legacy') {
       return state.mode === 'audio' ? (state.media.data.audioOptions || []) : (state.media.data.videoOptions || []);
     }
@@ -227,28 +266,67 @@
     ui.duration.textContent = formatDuration(data.duration || 0);
     ui.title.textContent = data.title || 'Tautan siap diproses';
     ui.author.textContent = data.author ? `Oleh ${data.author}` : '';
-    const image = data.thumbnail;
-    if (image) { ui.thumb.src = image; ui.thumb.hidden = false; ui.thumbPlaceholder.hidden = true; }
-    else { ui.thumb.removeAttribute('src'); ui.thumb.hidden = true; ui.thumbPlaceholder.hidden = false; }
-    if (media.kind === 'native') {
+
+    const previewUrl = data.previewUrl || media.previewUrl || media.items?.find((item) => item.kind === 'video')?.url || '';
+    if (previewUrl) {
+      if (ui.preview.getAttribute('src') !== previewUrl) {
+        ui.preview.pause?.();
+        ui.preview.src = previewUrl;
+        ui.preview.load?.();
+      }
+      if (data.thumbnail) ui.preview.poster = data.thumbnail;
+      ui.preview.hidden = false;
+      ui.thumb.hidden = true;
+      ui.thumbPlaceholder.hidden = true;
+    } else {
+      if (!ui.preview.hidden) {
+        ui.preview.pause?.();
+        ui.preview.removeAttribute('src');
+        ui.preview.load?.();
+      }
+      ui.preview.hidden = true;
+      const image = data.thumbnail;
+      if (image) { ui.thumb.src = image; ui.thumb.hidden = false; ui.thumbPlaceholder.hidden = true; }
+      else { ui.thumb.removeAttribute('src'); ui.thumb.hidden = true; ui.thumbPlaceholder.hidden = false; }
+    }
+
+    if (media.kind === 'unsupported' || media.downloadUnavailable) {
+      ui.modeSummary.textContent = 'Unduhan tidak tersedia';
+      ui.formatSummary.textContent = 'Preview saja';
+      ui.note.textContent = media.error || 'Server unduhan belum mendukung media ini.';
+    } else if (media.kind === 'native') {
       ui.modeSummary.textContent = state.mode === 'audio' ? `${options.length} pilihan audio tersedia` : `${options.length} pilihan kualitas video tersedia`;
       ui.formatSummary.textContent = state.mode === 'audio' ? 'MP3' : 'MP4 / video';
-      ui.note.textContent = options.length ? 'Kualitas dipilih saat kamu menekan Simpan. Daftar mengikuti format yang tersedia dari sumber.' : 'Format ini tidak menyediakan media pada mode yang dipilih.';
+      ui.note.textContent = options.length
+        ? 'Kualitas dipilih saat kamu menekan Simpan. Daftar mengikuti format yang tersedia dari sumber.'
+        : `Format ${state.mode === 'audio' ? 'audio' : 'video'} tidak tersedia dari tautan ini. ${state.mode === 'audio' ? 'Coba mode Video.' : (data.audioOptions || []).length ? 'Audio tersedia; pindah ke mode Audio.' : 'Belum ada format yang bisa disimpan.'}`;
     } else if (media.kind === 'legacy') {
-      ui.modeSummary.textContent = state.mode === 'audio' ? 'Audio akan diminta saat disimpan' : 'Video akan diminta saat disimpan';
+      ui.modeSummary.textContent = options.length ? `${options.length} pilihan ${state.mode === 'audio' ? 'audio' : 'video'} tersedia` : `Format ${state.mode === 'audio' ? 'audio' : 'video'} tidak tersedia`;
       ui.formatSummary.textContent = state.mode === 'audio' ? 'MP3 / audio' : 'Video';
-      ui.note.textContent = 'API ini memakai format kompatibel Cobalt. Pilihan kualitas adalah batas maksimum yang diminta; server memilih format terbaik yang tersedia.';
-    } else {
+      ui.note.textContent = options.length
+        ? 'API cadangan kompatibel Cobalt akan memproses format saat kamu menekan Simpan.'
+        : 'API cadangan mengenali tautan, tetapi tidak menyediakan media pada mode yang dipilih.';
+    } else if (media.kind === 'piped') {
       ui.modeSummary.textContent = `${options.length} stream ${state.mode === 'audio' ? 'audio' : 'video'} tersedia`;
       ui.formatSummary.textContent = state.mode === 'audio' ? 'Audio' : 'Video';
-      ui.note.textContent = 'Stream berasal dari server Piped cadangan. Ketersediaan dan kualitas bergantung pada sumber.';
+      ui.note.textContent = options.length ? 'Stream berasal dari server Piped cadangan. Ketersediaan dan kualitas bergantung pada sumber.' : 'Tidak ada stream untuk mode yang dipilih.';
     }
     ui.saveLabel.textContent = state.mode === 'audio' ? 'Simpan Audio' : 'Simpan Video';
-    ui.saveOpen.disabled = options.length === 0;
+    const canSave = options.length > 0 && media.kind !== 'unsupported' && !media.downloadUnavailable;
+    ui.saveOpen.hidden = !canSave;
+    ui.saveOpen.disabled = !canSave;
     ui.videoTab.classList.toggle('active', state.mode === 'video');
     ui.audioTab.classList.toggle('active', state.mode === 'audio');
     ui.videoTab.setAttribute('aria-selected', String(state.mode === 'video'));
     ui.audioTab.setAttribute('aria-selected', String(state.mode === 'audio'));
+    ui.preview.onerror = () => {
+      ui.preview.pause?.();
+      ui.preview.hidden = true;
+      ui.preview.removeAttribute('src');
+      if (data.thumbnail) { ui.thumb.src = data.thumbnail; ui.thumb.hidden = false; ui.thumbPlaceholder.hidden = true; }
+      else { ui.thumb.hidden = true; ui.thumbPlaceholder.hidden = false; }
+      ui.note.textContent = `${ui.note.textContent} Pratinjau video tidak dapat diputar di browser ini.`;
+    };
   }
   function switchMode(mode) {
     if (!['video', 'audio'].includes(mode)) return;
@@ -259,58 +337,152 @@
     savePreferences();
     renderMedia();
   }
+  function resetForNewRequest() {
+    state.inspectController?.abort();
+    state.downloadController?.abort();
+    state.inspectController = null;
+    state.downloadController = null;
+    state.busy = false;
+    state.media = null;
+    state.candidates = [];
+    state.apiIndex = -1;
+    if (ui.saveDialog.open) ui.saveDialog.close();
+    ui.result.hidden = true;
+    ui.saveOpen.hidden = true;
+    ui.saveOpen.disabled = true;
+    setStatus('');
+    ui.manager.hidden = true;
+    ui.managerTitle.textContent = 'Menyiapkan unduhan';
+    ui.managerStatus.textContent = 'Menunggu tautan baru...';
+    ui.cancelDownload.hidden = true;
+    ui.retryDownload.hidden = true;
+    ui.progress.style.width = '0%';
+    if (ui.preview) {
+      ui.preview.pause?.();
+      ui.preview.removeAttribute('src');
+      ui.preview.removeAttribute('poster');
+      ui.preview.hidden = true;
+      ui.preview.load?.();
+    }
+    ui.thumb.removeAttribute('src');
+    ui.thumb.hidden = true;
+    ui.thumbPlaceholder.hidden = false;
+    ui.ambil.disabled = false;
+    ui.ambil.innerHTML = '<span class="button-icon">↓</span><span>Ambil</span>';
+  }
+
   async function takeLink(rawUrl = ui.url.value) {
+    const taskId = ++state.currentTask;
+    resetForNewRequest();
     const url = normaliseUrl(rawUrl);
     if (!url) { setStatus('Masukkan tautan http atau https yang valid.', 'error'); return; }
     const platform = platformOf(url);
     if (platform === 'other') { setStatus('Platform pada tautan ini belum dikenali Petik.', 'error'); return; }
-    const taskId = ++state.currentTask;
-    state.media = null; state.apiIndex = -1; ui.result.hidden = true;
+
+    const controller = new AbortController();
+    state.inspectController = controller;
     setBusy(true, 'Memeriksa media dan layanan API...');
-    const metaPromise = noembed(url);
+    const metaPromise = noembed(url, controller.signal);
     state.candidates = candidates();
-    let found = null;
-    for (let index = 0; index < state.candidates.length; index++) {
+    try {
+      let found = null;
+      for (let index = 0; index < state.candidates.length; index++) {
+        if (taskId !== state.currentTask) return;
+        const result = await inspectCandidate(state.candidates[index], url, platform, index, controller.signal);
+        if (result) { found = result; break; }
+      }
+      if (!found && platform === 'youtube') found = await inspectPiped(url, controller.signal);
       if (taskId !== state.currentTask) return;
-      const result = await inspectCandidate(state.candidates[index], url, platform, index);
-      if (result) { found = result; break; }
-    }
-    if (!found && platform === 'youtube') found = await inspectPiped(url);
-    if (taskId !== state.currentTask) return;
-    if (!found) {
-      setBusy(false);
-      setStatus(platform === 'youtube'
-        ? 'YouTube menolak atau tidak mengembalikan metadata ke server publik yang tersedia. Ini bukan bukti tautan rusak. Coba lagi nanti atau gunakan API pribadi yang kamu kelola.'
-        : 'Belum ada API yang berhasil mengenali tautan ini. Pastikan postingan publik, lalu coba lagi.', 'error');
-      return;
-    }
-    if (found.data) {
-      found.data.title = found.data.title || '';
-      found.data.author = found.data.author || '';
-      found.data.thumbnail = found.data.thumbnail || '';
-    }
-    if (found.platform === 'soundcloud' || (found.kind === 'native' && !(found.data.videoOptions || []).length && (found.data.audioOptions || []).length)) {
-      state.mode = 'audio';
-    }
-    state.media = { ...found, url, originalPlatform: platform };
-    state.apiIndex = found.index;
-    state.lastApiUsed = found.base || 'Piped';
-    setBusy(false);
-    ui.result.hidden = false;
-    setStatus(found.kind === 'native' ? 'Media berhasil diperiksa. Pilih Video atau Audio, lalu tekan Simpan.' : 'Tautan dikenali. API cadangan akan memproses format saat kamu menekan Simpan.', 'success');
-    renderMedia();
-    saveHistory({ url, title: found.data?.title || LABELS[platform], service: LABELS[platform], at: Date.now() });
-    metaPromise.then((meta) => {
-      if (state.media?.url !== url || !state.media.data) return;
-      if (!state.media.data.title && meta.title) state.media.data.title = meta.title;
-      if (!state.media.data.author && meta.author) state.media.data.author = meta.author;
-      if (!state.media.data.thumbnail && meta.thumbnail) state.media.data.thumbnail = meta.thumbnail;
+
+      if (!found) {
+        const meta = await metaPromise;
+        if (taskId !== state.currentTask) return;
+        if (platform === 'youtube') {
+          const id = youtubeId(url);
+          state.media = {
+            kind: 'unsupported', platform, url, index: -1,
+            error: 'YouTube belum didukung oleh server unduhan yang tersedia. Preview tetap ditampilkan, tetapi tombol Simpan tidak tersedia.',
+            data: {
+              title: meta.title || 'Video YouTube', author: meta.author || '',
+              thumbnail: meta.thumbnail || (id ? `https://i.ytimg.com/vi/${encodeURIComponent(id)}/hqdefault.jpg` : ''),
+              videoOptions: [], audioOptions: []
+            }
+          };
+          renderMedia();
+          setStatus(state.media.error, 'error');
+          saveHistory({ url, title: state.media.data.title, service: LABELS[platform], at: Date.now() });
+        } else {
+          setStatus('Belum ada API yang berhasil memeriksa tautan ini. Pastikan postingan publik, lalu coba lagi.', 'error');
+        }
+        return;
+      }
+
+      if (found.kind === 'piped') {
+        const bestPreview = [...(found.streams.videos || [])].sort((a, b) => {
+          const qa = Number(String(a.quality).match(/\d+/)?.[0] || 0);
+          const qb = Number(String(b.quality).match(/\d+/)?.[0] || 0);
+          return qb - qa;
+        })[0];
+        found.data = {
+          title: found.data.title || '', author: found.data.uploader || found.data.uploaderName || '',
+          duration: found.data.duration || 0, thumbnail: found.data.thumbnailUrl || found.data.thumbnail || '',
+          previewUrl: bestPreview?.url || ''
+        };
+      }
+      if (found.data) {
+        found.data.title = found.data.title || '';
+        found.data.author = found.data.author || '';
+        found.data.thumbnail = found.data.thumbnail || '';
+        if (!found.data.thumbnail && platform === 'youtube') {
+          const id = youtubeId(url);
+          if (id) found.data.thumbnail = `https://i.ytimg.com/vi/${encodeURIComponent(id)}/hqdefault.jpg`;
+        }
+      }
+      if (found.platform === 'soundcloud' || (found.data && !(found.data.videoOptions || []).length && (found.data.audioOptions || []).length)) {
+        state.mode = 'audio';
+      } else if (found.data && !(found.data.audioOptions || []).length && (found.data.videoOptions || []).length) {
+        state.mode = 'video';
+      }
+      state.media = { ...found, url, originalPlatform: platform };
+      state.apiIndex = found.index;
+      state.lastApiUsed = found.base || 'Piped';
       renderMedia();
-      if (meta.title) saveHistory({ url, title: meta.title, service: LABELS[platform], at: Date.now() });
-    });
+      const hasVideo = found.kind === 'piped' ? found.streams.videos.length > 0 : (found.data?.videoOptions || []).length > 0;
+      const hasAudio = found.kind === 'piped' ? found.streams.audios.length > 0 : (found.data?.audioOptions || []).length > 0;
+      if (!hasVideo && !hasAudio) {
+        if (platform === 'youtube') {
+          state.media.kind = 'unsupported';
+          state.media.error = 'YouTube belum didukung oleh server unduhan yang tersedia. Preview tetap ditampilkan, tetapi tombol Simpan tidak tersedia.';
+          renderMedia();
+          setStatus(state.media.error, 'error');
+        } else {
+          setStatus('Tautan dikenali, tetapi API tidak menemukan format video maupun audio yang bisa disimpan.', 'error');
+        }
+      } else {
+        setStatus('Media berhasil diperiksa. Pilih Video atau Audio, lalu tekan Simpan.', 'success');
+      }
+      saveHistory({ url, title: found.data?.title || LABELS[platform], service: LABELS[platform], at: Date.now() });
+      metaPromise.then((meta) => {
+        if (state.currentTask !== taskId || state.media?.url !== url || !state.media.data) return;
+        if (!state.media.data.title && meta.title) state.media.data.title = meta.title;
+        if (!state.media.data.author && meta.author) state.media.data.author = meta.author;
+        if (!state.media.data.thumbnail && meta.thumbnail) state.media.data.thumbnail = meta.thumbnail;
+        renderMedia();
+        if (meta.title) saveHistory({ url, title: meta.title, service: LABELS[platform], at: Date.now() });
+      });
+    } catch (error) {
+      if (taskId !== state.currentTask) return;
+      if (error?.name === 'AbortError') setStatus('Pemeriksaan API melewati batas waktu. Coba lagi atau gunakan API lain di Pengaturan.', 'error');
+      else setStatus(error?.message || 'Koneksi ke API gagal. Coba tautan lagi.', 'error');
+    } finally {
+      if (taskId === state.currentTask) {
+        setBusy(false);
+        state.inspectController = null;
+      }
+    }
   }
   function qualityOptions() {
-    if (!state.media) return [];
+    if (!state.media || state.media.downloadUnavailable || state.media.kind === 'unsupported') return [];
     if (state.media.kind === 'native') {
       const key = state.mode === 'audio' ? 'audioOptions' : 'videoOptions';
       return state.media.data[key] || [];
@@ -319,7 +491,8 @@
       const streams = state.mode === 'audio' ? state.media.streams.audios : state.media.streams.videos;
       return streams.map((item) => ({ id: item.id, label: item.label, item }));
     }
-    return state.mode === 'audio' ? [{ id: 'best', label: 'MP3 · kualitas terbaik' }] : DEFAULT_QUALITY;
+    if (state.media.kind === 'legacy') return currentModeOptions();
+    return [];
   }
   function openSaveDialog() {
     if (!state.media) return;
@@ -401,7 +574,8 @@
   }
   async function downloadSelected() {
     const media = state.media;
-    if (!media || state.busy) return;
+    if (!media || state.busy || !qualityOptions().length) return;
+    const taskId = state.currentTask;
     const selectedId = ui.qualitySelect.value;
     state.selectedQuality = selectedId;
     savePreferences();
@@ -415,8 +589,18 @@
       if (media.kind === 'piped') {
         const stream = option.item;
         ui.managerStatus.textContent = 'Mengirim stream dari server cadangan...';
-        try { await downloadStream(stream.url, stream.filename, controller.signal); }
-        catch { window.open(stream.url, '_blank', 'noopener,noreferrer'); }
+        try {
+          const outcome = await downloadStream(stream.url, stream.filename, controller.signal);
+          ui.progress.style.width = '100%';
+          ui.managerStatus.textContent = outcome === 'shared' ? 'Berkas dibagikan. Pilih Simpan ke File atau aplikasi tujuan.' : 'Unduhan selesai.';
+        } catch (error) {
+          if (error?.name === 'AbortError') throw error;
+          if (error instanceof TypeError) {
+            const opened = window.open(stream.url, '_blank', 'noopener,noreferrer');
+            if (!opened) throw new Error('Browser memblokir tautan unduhan langsung. Izinkan pop-up lalu coba lagi.');
+            ui.managerStatus.textContent = 'Tautan unduhan dibuka di tab baru. Pada iPhone, gunakan Bagikan untuk menyimpan berkas.';
+          } else throw error;
+        }
       } else {
         let downloaded = false;
         let start = media.index >= 0 ? media.index : 0;
@@ -457,7 +641,7 @@
               return qb - qa;
             });
             const chosen = Number.isFinite(upper) && upper > 0
-              ? (ranked.filter((item) => Number(String(item.quality).match(/\d+/)?.[0] || 0) <= upper).at(0) || ranked.at(-1))
+              ? ranked.filter((item) => Number(String(item.quality).match(/\d+/)?.[0] || 0) <= upper).at(0)
               : ranked[0];
             if (chosen?.url) {
               ui.managerStatus.textContent = 'Mencoba stream YouTube cadangan...';
@@ -475,14 +659,26 @@
       }
       setStatus('Permintaan unduhan selesai. Periksa folder Unduhan atau aplikasi File.', 'success');
     } catch (error) {
-      if (error?.name === 'AbortError') setStatus('Permintaan unduhan dibatalkan.', 'error');
-      else setStatus(error?.message || 'Unduhan gagal. Coba lagi.', 'error');
-      ui.managerStatus.textContent = error?.message || (error?.name === 'AbortError' ? 'Permintaan dibatalkan.' : 'Unduhan gagal.');
-      ui.retryDownload.hidden = false;
+      if (taskId !== state.currentTask) return;
+      if (media.platform === 'youtube' && error?.name !== 'AbortError') {
+        media.downloadUnavailable = true;
+        media.error = 'YouTube belum didukung oleh server unduhan yang tersedia. Preview tetap ditampilkan, tetapi media ini tidak dapat disimpan melalui API saat ini.';
+        renderMedia();
+        ui.manager.hidden = true;
+        setStatus(media.error, 'error');
+      } else {
+        if (error?.name === 'AbortError') setStatus('Permintaan unduhan dibatalkan.', 'error');
+        else setStatus(error?.message || 'Unduhan gagal. Coba lagi.', 'error');
+        ui.managerStatus.textContent = error?.message || (error?.name === 'AbortError' ? 'Permintaan dibatalkan.' : 'Unduhan gagal.');
+        ui.retryDownload.hidden = false;
+      }
     } finally {
-      state.busy = false; state.downloadController = null; ui.saveOpen.disabled = false;
-      ui.cancelDownload.hidden = true;
-  ui.retryDownload.hidden = true;
+      if (taskId === state.currentTask) {
+        state.busy = false; state.downloadController = null;
+        ui.saveOpen.disabled = !qualityOptions().length;
+        ui.cancelDownload.hidden = true;
+        if (ui.manager.hidden) ui.retryDownload.hidden = true;
+      }
     }
   }
   function renderHistory() {
