@@ -157,6 +157,9 @@
     }
     const data = await parseJson(response);
     if (response.ok && isInspectSuccess(data)) {
+      // Route native previews through Petik's byte-range proxy. Safari/iOS needs
+      // proper 206 + Content-Range responses for inline playback and seeking.
+      if (data.previewUrl) data.previewUrl = `${base}/api/preview?url=${encodeURIComponent(url)}`;
       return { kind: 'native', base, index, platform: data.service || platform, data };
     }
     // Cobalt-compatible APIs do not implement /api/inspect; identify them by their root descriptor.
@@ -272,6 +275,9 @@
       if (ui.preview.getAttribute('src') !== previewUrl) {
         ui.preview.pause?.();
         ui.preview.src = previewUrl;
+        ui.preview.preload = 'metadata';
+        ui.preview.playsInline = true;
+        ui.preview.controls = true;
         ui.preview.load?.();
       }
       if (data.thumbnail) ui.preview.poster = data.thumbnail;
