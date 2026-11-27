@@ -8,12 +8,12 @@
   const LABELS = {
     youtube: 'YouTube', instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok',
     twitter: 'X', reddit: 'Reddit', vimeo: 'Vimeo', pinterest: 'Pinterest',
-    soundcloud: 'SoundCloud', telegram: 'Telegram', threads: 'Threads', snapchat: 'Snapchat', other: 'Tautan'
+    soundcloud: 'SoundCloud', telegram: 'Telegram', threads: 'Threads', snapchat: 'Snapchat', dailymotion: 'Dailymotion', linkedin: 'LinkedIn', other: 'Tautan'
   };
   const SERVICE_MAP = {
     youtube: 'youtube', instagram: 'instagram', facebook: 'facebook', tiktok: 'tiktok',
     twitter: 'twitter', reddit: 'reddit', vimeo: 'vimeo', pinterest: 'pinterest',
-    soundcloud: 'soundcloud', telegram: 'telegram', threads: 'threads', snapchat: 'snapchat'
+    soundcloud: 'soundcloud', telegram: 'telegram', threads: 'threads', snapchat: 'snapchat', dailymotion: 'dailymotion', linkedin: 'linkedin'
   };
   const DEFAULT_QUALITY = [
     { id: 'max', label: 'Terbaik yang tersedia' }, { id: '1080', label: 'Maksimal 1080p' },
@@ -89,6 +89,8 @@
       if (host === 't.me' || domain('telegram.me')) return 'telegram';
       if (domain('threads.net') || domain('threads.com')) return 'threads';
       if (domain('snapchat.com')) return 'snapchat';
+      if (host === 'dai.ly' || domain('dailymotion.com')) return 'dailymotion';
+      if (domain('linkedin.com')) return 'linkedin';
       return 'other';
     } catch { return 'other'; }
   }
@@ -182,8 +184,12 @@
       if (base === apiBase(API_PRIMARY)) state.apiReadyAt = Date.now();
       return { kind: 'native', base, index, platform: data.service || platform, data };
     }
-    // Cobalt-compatible APIs do not implement /api/inspect; identify them by their root descriptor.
-    if (response.status !== 404 && response.status !== 405) return null;
+    // Keep a useful backend reason when the native API rejects a URL; legacy
+    // Cobalt endpoints are identified only by their missing /api/inspect route.
+    if (response.status !== 404 && response.status !== 405) {
+      const detail = data?.error?.context?.message || data?.error?.message || data?.detail || '';
+      return detail ? { kind: 'failure', message: String(detail).slice(0, 280), base, index, platform } : null;
+    }
     try {
       const rootResponse = await fetch(`${base}/`, { headers: { 'Accept': 'application/json' }, signal: requestSignal(9000, externalSignal) });
       if (!rootResponse.ok) return null;
@@ -502,9 +508,11 @@
     state.candidates = candidates();
     try {
       let found = null;
+      let lastInspectError = '';
       for (let index = 0; index < state.candidates.length; index++) {
         if (taskId !== state.currentTask) return;
         const result = await inspectCandidate(state.candidates[index], url, platform, index, controller.signal);
+        if (result?.kind === 'failure') { lastInspectError = result.message; continue; }
         if (result) { found = result; break; }
       }
       if (!found && platform === 'youtube') found = await inspectPiped(url, controller.signal);
@@ -528,7 +536,18 @@
           setStatus(state.media.error, 'error');
           saveHistory({ url, title: state.media.data.title, service: LABELS[platform], at: Date.now() });
         } else {
-          setStatus('Belum ada API yang berhasil memeriksa tautan ini. Pastikan postingan publik, lalu coba lagi.', 'error');
+          const lower = lastInspectError.toLowerCase();
+          let helpful = lastInspectError;
+          if (/private|login|sign in|403|401|not available|deleted/.test(lower)) {
+            helpful = 'Konten tidak bisa diakses sebagai postingan publik tanpa login, atau platform sedang membatasi server Petik.';
+          } else if (/429|rate limit|too many requests/.test(lower)) {
+            helpful = 'Platform sedang membatasi permintaan. Tunggu sebentar, lalu coba lagi.';
+          } else if (/unsupported|not supported/.test(lower)) {
+            helpful = 'Jenis konten ini belum didukung extractor gratis yang tersedia.';
+          } else if (/timeout|timed out/.test(lower)) {
+            helpful = 'Platform terlalu lama merespons. Coba lagi beberapa saat.';
+          }
+          setStatus(helpful || 'Belum ada API yang berhasil memeriksa tautan ini. Pastikan postingan publik, lalu coba lagi.', 'error');
         }
         return;
       }
@@ -815,7 +834,7 @@
     if (ui.saveOpen) ui.saveOpen.disabled = true;
     showManager(true, ui.galleryZip.checked ? 'Mengemas foto menjadi ZIP' : `Mengunduh ${indices.length} foto`, 'Meminta foto dari server...');
     try {
-      ui.managerStatus.textContent = 'Mengambil foto terpilih melalui gallery-dl...';
+      ui.managerStatus.textContent = media.platform === 'threads' ? 'Mengambil foto Threads dari halaman publik...' : 'Mengambil foto terpilih melalui gallery-dl...';
       const result = await postJson(`${media.base}/api/gallery/download`, { url: media.url, indices, zip: ui.galleryZip.checked }, 180000, controller.signal);
       if (!result.response.ok) {
         const detail = result.data?.error?.context?.message || result.data?.error?.message || `Server mengembalikan HTTP ${result.response.status}.`;
