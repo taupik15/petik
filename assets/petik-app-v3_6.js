@@ -52,7 +52,7 @@
   const initialPreferences = readPreferences();
   const state = {
     mode: initialPreferences.mode, busy: false, media: null, candidates: [], apiIndex: -1,
-    downloadController: null, inspectController: null, previewOpen: false, selectedQuality: initialPreferences.quality, selectedPhotos: new Set(), history: readHistory(), currentTask: 0, lastApiUsed: ''
+    downloadController: null, inspectController: null, previewOpen: false, selectedQuality: initialPreferences.quality, selectedMedia: new Set(), history: readHistory(), currentTask: 0, lastApiUsed: ''
   };
   function savePreferences() { safeStorageSet(STORAGE.prefs, JSON.stringify({ mode: state.mode, quality: state.selectedQuality })); }
   function saveHistory(item) {
@@ -286,35 +286,53 @@
     }
     return [];
   }
+  function galleryMediaItems() {
+    const data = state.media?.data || {};
+    if (Array.isArray(data.mediaItems)) return data.mediaItems;
+    return Array.isArray(data.photoItems) ? data.photoItems.map((item) => ({ ...item, type: 'photo', kind: 'image' })) : [];
+  }
   function renderGallery() {
-    const items = Array.isArray(state.media?.data?.photoItems) ? state.media.data.photoItems : [];
+    const items = galleryMediaItems();
     if (!items.length) {
       ui.galleryPanel.hidden = true;
       ui.galleryGrid.innerHTML = '';
       return;
     }
     ui.galleryPanel.hidden = false;
-    const selectedCount = items.filter((item) => state.selectedPhotos.has(Number(item.id))).length;
-    ui.galleryInfo.textContent = `${items.length} foto ditemukan. Maksimal ${state.media.data.galleryLimit || 20} foto per proses.`;
+    const photos = items.filter((item) => (item.type || (item.kind === 'video' ? 'video' : 'photo')) === 'photo').length;
+    const videos = items.length - photos;
+    const selectedCount = items.filter((item) => state.selectedMedia.has(Number(item.id))).length;
+    const limit = state.media.data.mediaLimit || state.media.data.galleryLimit || 20;
+    ui.galleryInfo.textContent = `${items.length} media ditemukan · ${photos} foto · ${videos} video. Maksimal ${limit} media per proses.`;
     ui.galleryCount.textContent = `${selectedCount} dari ${items.length} dipilih`;
     ui.galleryGrid.innerHTML = items.map((item, index) => {
       const id = Number(item.id) || index + 1;
-      const selected = state.selectedPhotos.has(id);
-      const imageUrl = escapeHtml(item.thumbnail || item.url || '');
-      const directUrl = safeDirectUrl(item.url || '');
-      const directButton = directUrl ? `<a class="gallery-direct-link" href="${escapeHtml(directUrl)}" target="_blank" rel="noopener noreferrer" aria-label="Buka Link Direct foto ${index + 1}" title="Buka Link Direct">↗</a>` : '';
-      return `<label class="gallery-thumb${selected ? ' selected' : ''}" title="Foto ${index + 1}">
-        <img src="${imageUrl}" alt="Foto ${index + 1}" loading="lazy" decoding="async">
+      const type = item.type || (item.kind === 'video' ? 'video' : 'photo');
+      const isVideo = type === 'video';
+      const selected = state.selectedMedia.has(id);
+      const imageUrl = escapeHtml(item.thumbnail || (!isVideo ? item.url : '') || '');
+      const directUrl = safeDirectUrl(item.directUrl || item.url || '');
+      const directButton = directUrl ? `<a class="gallery-direct-link" href="${escapeHtml(directUrl)}" target="_blank" rel="noopener noreferrer" aria-label="Buka Link Direct ${isVideo ? 'video' : 'foto'} ${index + 1}" title="Buka Link Direct">↗</a>` : '';
+      const mediaPreview = imageUrl
+        ? `<img src="${imageUrl}" alt="${isVideo ? 'Thumbnail video' : 'Foto'} ${index + 1}" loading="lazy" decoding="async">`
+        : `<span class="gallery-media-placeholder" aria-hidden="true">${isVideo ? '▶' : '▧'}</span>`;
+      const duration = isVideo && Number.isFinite(Number(item.duration)) && Number(item.duration) > 0
+        ? `<span class="gallery-duration">${Math.floor(Number(item.duration) / 60)}:${String(Math.floor(Number(item.duration) % 60)).padStart(2, '0')}</span>` : '';
+      return `<label class="gallery-thumb${isVideo ? ' is-video' : ' is-photo'}${selected ? ' selected' : ''}" title="${isVideo ? 'Video' : 'Foto'} ${index + 1}">
+        ${mediaPreview}
         <span class="gallery-number">${index + 1}</span>
+        <span class="gallery-type">${isVideo ? 'VIDEO' : 'FOTO'}</span>
+        ${duration}
         <span class="gallery-check" aria-hidden="true">${selected ? '✓' : ''}</span>
         ${directButton}
-        <input type="checkbox" data-photo-index="${id}" aria-label="Pilih foto ${index + 1}" ${selected ? 'checked' : ''}>
+        <input type="checkbox" data-media-index="${id}" aria-label="Pilih ${isVideo ? 'video' : 'foto'} ${index + 1}" ${selected ? 'checked' : ''}>
       </label>`;
     }).join('');
-    ui.galleryDownload.textContent = `Unduh foto terpilih (${selectedCount})`;
+    ui.galleryDownload.textContent = `Unduh media terpilih (${selectedCount})`;
     ui.galleryDownload.disabled = selectedCount === 0 || state.busy;
     ui.galleryAll.disabled = selectedCount === items.length || state.busy;
     ui.galleryNone.disabled = selectedCount === 0 || state.busy;
+    ui.galleryZip.disabled = state.busy;
   }
 
   function safeDirectUrl(value) {
@@ -438,10 +456,13 @@
     ui.videoTab.setAttribute('aria-selected', String(state.mode === 'video'));
     ui.audioTab.setAttribute('aria-selected', String(state.mode === 'audio'));
     if (media.previewNote) ui.note.textContent = `${ui.note.textContent} ${media.previewNote}`.trim();
-    if (!hasVideoOptions && !hasAudioOptions && (data.photoItems || []).length) {
-      ui.modeSummary.textContent = `${data.photoItems.length} foto tersedia`;
-      ui.formatSummary.textContent = 'JPG / gambar';
-      ui.note.textContent = 'Pilih foto yang ingin disimpan. Kamu bisa mengunduh satu per satu atau menggabungkannya menjadi ZIP.';
+    const galleryItems = Array.isArray(data.mediaItems) ? data.mediaItems : (data.photoItems || []);
+    if (!hasVideoOptions && !hasAudioOptions && galleryItems.length) {
+      const photos = galleryItems.filter((item) => (item.type || 'photo') === 'photo').length;
+      const videos = galleryItems.length - photos;
+      ui.modeSummary.textContent = `${photos} foto · ${videos} video tersedia`;
+      ui.formatSummary.textContent = 'Foto / video';
+      ui.note.textContent = 'Pilih foto dan video yang ingin disimpan. Kamu bisa mengunduh satu per satu atau menggabungkannya menjadi ZIP.';
     }
     renderGallery();
   }
@@ -514,7 +535,7 @@
     state.downloadController = null;
     state.busy = false;
     state.media = null;
-    state.selectedPhotos = new Set();
+    state.selectedMedia = new Set();
     state.candidates = [];
     state.apiIndex = -1;
     if (ui.saveDialog.open) ui.saveDialog.close();
@@ -639,15 +660,16 @@
         state.mode = 'video';
       }
       state.media = { ...found, url, originalPlatform: platform };
-      state.selectedPhotos = new Set((found.data?.photoItems || []).map((item, index) => Number(item.id) || index + 1));
+      state.selectedMedia = new Set((found.data?.mediaItems || found.data?.photoItems || []).map((item, index) => Number(item.id) || index + 1));
       state.apiIndex = found.index;
       state.lastApiUsed = found.base || 'Piped';
       renderMedia();
       if (state.media.kind === 'native' && !state.media.data.previewUrl && (state.media.data.videoOptions || []).length) tryCobaltPreview(state.media);
       const hasVideo = found.kind === 'piped' ? found.streams.videos.length > 0 : (found.data?.videoOptions || []).length > 0;
       const hasAudio = found.kind === 'piped' ? found.streams.audios.length > 0 : (found.data?.audioOptions || []).length > 0;
-      const hasPhotos = (found.data?.photoItems || []).length > 0;
-      if (!hasVideo && !hasAudio && !hasPhotos) {
+      const galleryItems = found.data?.mediaItems || found.data?.photoItems || [];
+      const hasGalleryMedia = galleryItems.length > 0;
+      if (!hasVideo && !hasAudio && !hasGalleryMedia) {
         if (platform === 'youtube') {
           state.media.kind = 'unsupported';
           state.media.error = 'YouTube belum didukung oleh server unduhan yang tersedia. Preview tetap ditampilkan, tetapi tombol Simpan tidak tersedia.';
@@ -656,8 +678,9 @@
         } else {
           setStatus('Tautan dikenali, tetapi API tidak menemukan format video maupun audio yang bisa disimpan.', 'error');
         }
-      } else if (hasPhotos && !hasVideo && !hasAudio) {
-        setStatus(`Galeri berhasil ditemukan: ${found.data.photoItems.length} foto. Pilih foto lalu unduh.`, 'success');
+      } else if (hasGalleryMedia && !hasVideo && !hasAudio) {
+        const counts = found.data.mediaCounts || { photos: galleryItems.filter((item) => item.type === 'photo').length, videos: galleryItems.filter((item) => item.type === 'video').length };
+        setStatus(`Galeri berhasil ditemukan: ${counts.photos || 0} foto dan ${counts.videos || 0} video. Pilih media lalu unduh.`, 'success');
       } else {
         setStatus('Media berhasil diperiksa. Pilih format yang tersedia, lalu Simpan.', 'success');
       }
@@ -884,17 +907,17 @@
   async function downloadGallerySelection() {
     const media = state.media;
     if (!media || state.busy || !media.base) return;
-    const indices = [...state.selectedPhotos].filter((value) => Number.isInteger(value) && value > 0).sort((a, b) => a - b);
-    if (!indices.length) { setStatus('Pilih minimal satu foto.', 'error'); return; }
+    const indices = [...state.selectedMedia].filter((value) => Number.isInteger(value) && value > 0).sort((a, b) => a - b);
+    if (!indices.length) { setStatus('Pilih minimal satu media.', 'error'); return; }
     const taskId = state.currentTask;
     const controller = new AbortController();
     state.downloadController = controller;
     state.busy = true;
     renderGallery();
     if (ui.saveOpen) ui.saveOpen.disabled = true;
-    showManager(true, ui.galleryZip.checked ? 'Mengemas foto menjadi ZIP' : `Mengunduh ${indices.length} foto`, 'Meminta foto dari server...');
+    showManager(true, ui.galleryZip.checked ? 'Mengemas foto dan video menjadi ZIP' : `Mengunduh ${indices.length} media`, 'Meminta media dari server...');
     try {
-      ui.managerStatus.textContent = media.platform === 'threads' ? 'Mengambil foto Threads dari halaman publik...' : 'Mengambil foto terpilih melalui gallery-dl...';
+      ui.managerStatus.textContent = media.platform === 'threads' ? 'Mengambil foto dan video Threads dari halaman publik...' : 'Mengambil media terpilih dari sumber...' ;
       const result = await postJson(`${media.base}/api/gallery/download`, { url: media.url, indices, zip: ui.galleryZip.checked }, 180000, controller.signal);
       if (!result.response.ok) {
         const detail = result.data?.error?.context?.message || result.data?.error?.message || `Server mengembalikan HTTP ${result.response.status}.`;
@@ -910,20 +933,20 @@
         let completed = 0;
         for (const file of files) {
           if (controller.signal.aborted) throw new DOMException('Dibatalkan', 'AbortError');
-          ui.managerStatus.textContent = `Mengirim foto ${completed + 1} dari ${files.length}...`;
+          ui.managerStatus.textContent = `Mengirim media ${completed + 1} dari ${files.length}...`;
           await downloadStream(new URL(file.url, media.base).toString(), file.filename || `petik-foto-${completed + 1}.jpg`, controller.signal);
           completed++;
           ui.progress.style.width = `${Math.round(completed / files.length * 100)}%`;
         }
-        ui.managerStatus.textContent = `${completed} foto selesai diproses satu per satu.`;
+        ui.managerStatus.textContent = `${completed} media selesai diproses satu per satu.`;
       } else {
-        throw new Error('Server tidak mengembalikan berkas foto.');
+        throw new Error('Server tidak mengembalikan berkas media.');
       }
-      if (taskId === state.currentTask) setStatus('Unduhan foto selesai. Periksa folder Unduhan atau aplikasi File.', 'success');
+      if (taskId === state.currentTask) setStatus('Unduhan media selesai. Periksa folder Unduhan atau aplikasi File.', 'success');
     } catch (error) {
       if (taskId !== state.currentTask) return;
-      setStatus(error?.name === 'AbortError' ? 'Unduhan foto dibatalkan.' : (error?.message || 'Unduhan foto gagal.'), 'error');
-      ui.managerStatus.textContent = error?.message || 'Unduhan foto gagal.';
+      setStatus(error?.name === 'AbortError' ? 'Unduhan media dibatalkan.' : (error?.message || 'Unduhan media gagal.'), 'error');
+      ui.managerStatus.textContent = error?.message || 'Unduhan media gagal.';
       ui.retryDownload.hidden = true;
     } finally {
       if (taskId === state.currentTask) {
@@ -976,17 +999,17 @@
   ui.cancelDownload.addEventListener('click', () => state.downloadController?.abort());
   ui.retryDownload.addEventListener('click', () => { ui.retryDownload.hidden = true; openSaveDialog(); });
   ui.galleryGrid.addEventListener('change', (event) => {
-    const checkbox = event.target.closest('[data-photo-index]');
+    const checkbox = event.target.closest('[data-media-index]');
     if (!checkbox) return;
-    const index = Number(checkbox.dataset.photoIndex);
-    if (checkbox.checked) state.selectedPhotos.add(index); else state.selectedPhotos.delete(index);
+    const index = Number(checkbox.dataset.mediaIndex);
+    if (checkbox.checked) state.selectedMedia.add(index); else state.selectedMedia.delete(index);
     renderGallery();
   });
   ui.galleryAll.addEventListener('click', () => {
-    state.selectedPhotos = new Set((state.media?.data?.photoItems || []).map((item, index) => Number(item.id) || index + 1));
+    state.selectedMedia = new Set(galleryMediaItems().map((item, index) => Number(item.id) || index + 1));
     renderGallery();
   });
-  ui.galleryNone.addEventListener('click', () => { state.selectedPhotos.clear(); renderGallery(); });
+  ui.galleryNone.addEventListener('click', () => { state.selectedMedia.clear(); renderGallery(); });
   ui.galleryDownload.addEventListener('click', downloadGallerySelection);
   async function refreshApiHealth() {
     ui.apiHealth.textContent = 'Memeriksa API Petik...';
