@@ -17,9 +17,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@1,9..144,560;1,9..144,640&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./assets/index-CmY0gYam.css">
-  <link rel="stylesheet" href="./assets/petik-gallery-v3_6.css?v=3.6.0">
-  <link rel="stylesheet" href="./assets/petik-v3_6.css?v=3.6.0">
-  <script defer src="./assets/petik-app-v3_6.js?v=3.6.0"></script>
+  <link rel="stylesheet" href="./assets/petik-gallery-v3_7.css?v=3.7.0">
+  <link rel="stylesheet" href="./assets/petik-v3_7.css?v=3.7.0">
+  <script defer src="./assets/petik-app-v3_7.js?v=3.7.0"></script>
 </head>
 <body>
   <main class="app-shell">
@@ -76,18 +76,23 @@
 
     <section id="gallery-panel" class="gallery-panel" hidden aria-live="polite">
       <div class="gallery-heading">
-        <div><h2>Foto &amp; Carousel</h2><p id="gallery-info">Pilih foto yang ingin disimpan.</p></div>
+        <div><h2>Foto &amp; Video</h2><p id="gallery-info">Pilih foto dan video yang ingin disimpan.</p></div>
         <span id="gallery-count" class="gallery-count">0 dipilih</span>
       </div>
       <div class="gallery-selection-row">
-        <span>Pilih foto untuk diunduh</span>
+        <span>Pilih foto dan video untuk diunduh</span>
         <div><button id="gallery-select-all" type="button" class="gallery-text-button">Semua</button><button id="gallery-select-none" type="button" class="gallery-text-button">Tidak ada</button></div>
       </div>
       <div id="gallery-grid" class="gallery-grid"></div>
-      <label class="gallery-zip-option"><input id="gallery-zip" type="checkbox"><span><strong>Unduh sebagai file ZIP</strong><small>Gabungkan semua foto pilihan menjadi satu file</small></span></label>
-      <button id="gallery-download" type="button" class="primary-button gallery-download" disabled>Unduh foto terpilih (0)</button>
-      <p class="gallery-footnote">Di iPhone, file ZIP biasanya lebih praktis untuk menyimpan banyak foto sekaligus.</p>
+      <label class="gallery-zip-option"><input id="gallery-zip" type="checkbox"><span><strong>Unduh sebagai file ZIP</strong><small>Gabungkan semua foto dan video pilihan menjadi satu file</small></span></label>
+      <button id="gallery-download" type="button" class="primary-button gallery-download" disabled>Unduh media terpilih (0)</button>
+      <p class="gallery-footnote">File ZIP menyatukan foto dan video yang dipilih ke dalam satu arsip.</p>
     </section>
+
+    <dialog class="sheet gallery-preview-dialog" id="gallery-preview-dialog">
+      <div class="dialog-head"><h2 id="gallery-preview-title">Pratinjau media</h2><button class="icon-button small" type="button" id="gallery-preview-close" aria-label="Tutup pratinjau">×</button></div>
+      <div id="gallery-preview-content" class="gallery-preview-content"></div>
+    </dialog>
 
     <div id="download-manager" class="download-manager" hidden>
       <div class="manager-row"><strong id="manager-title">Menyiapkan unduhan</strong><div class="manager-actions"><button type="button" id="retry-download" class="text-button" hidden>Coba lagi</button><button type="button" id="cancel-download" class="text-button">Batal</button></div></div>

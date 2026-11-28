@@ -1,5 +1,9 @@
-Petik Website v3.6.0
-Theme: warm cream / ivory / terracotta
-Preview: separate panel, hidden by default, Show / Hide toggle
-Direct links: independent of save success when valid media URL is extracted
-Gallery: per-photo direct link when source image URL is available
+Petik Website v3.7.0
+Theme: warm cream / ivory / terracotta (retained from v3.6.0)
+Mixed media: ordered photo + video carousel gallery
+Selection: mixed photo/video multi-select
+Downloads: individual media and mixed ZIP with partial-success reporting
+Direct links: independent per media item when a direct source URL is available
+Preview: per-item photo/video preview dialog; primary video preview panel hidden by default
+Mobile: responsive gallery and preview layout
+API contract: Petik Universal API v1.8.0
