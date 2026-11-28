@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="description" content="Petik — pengunduh video, audio, dan foto publik dari YouTube, Instagram, Facebook, TikTok, X, Reddit, Vimeo, Pinterest, SoundCloud, Telegram, Threads, Snapchat, Dailymotion, dan LinkedIn.">
-  <meta name="theme-color" content="#12110e">
-  <title>Petik — Video & Audio Downloader</title>
+  <meta name="theme-color" content="#f6f1e8">
+  <title>Petik — Downloader Media Publik</title>
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
@@ -17,8 +17,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@1,9..144,560;1,9..144,640&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./assets/index-CmY0gYam.css">
-  <link rel="stylesheet" href="./assets/petik-gallery-v3_5.css?v=3.5.2">
-  <script defer src="./assets/petik-app-v3_5.js?v=3.5.2"></script>
+  <link rel="stylesheet" href="./assets/petik-gallery-v3_6.css?v=3.6.0">
+  <link rel="stylesheet" href="./assets/petik-v3_6.css?v=3.6.0">
+  <script defer src="./assets/petik-app-v3_6.js?v=3.6.0"></script>
 </head>
 <body>
   <main class="app-shell">
@@ -50,8 +51,7 @@
     <div id="status-area" class="status-area" aria-live="polite" hidden></div>
     <section id="result-card" class="result-card" hidden aria-live="polite">
       <div class="thumbnail-wrap" id="thumbnail-wrap">
-        <video id="media-preview" controls playsinline preload="metadata" hidden aria-label="Pratinjau video"></video>
-        <img id="media-thumb" alt="Pratinjau media" hidden>
+        <img id="media-thumb" alt="Thumbnail media" hidden>
         <div class="thumbnail-placeholder" id="thumbnail-placeholder">PETIK</div>
       </div>
       <div class="result-content">
@@ -63,8 +63,15 @@
           <span id="format-summary" class="format-chip"></span>
         </div>
         <div id="availability-note" class="availability-note"></div>
+        <button class="preview-toggle" id="preview-toggle" type="button" hidden aria-expanded="false">Show Preview</button>
         <button class="primary-button save-button" id="save-open" type="button"><span class="button-icon">↓</span><span id="save-label">Simpan Video</span></button>
+        <a class="direct-link" id="direct-link" href="#" target="_blank" rel="noopener noreferrer" hidden>Buka Link Direct <span aria-hidden="true">↗</span></a>
       </div>
+    </section>
+
+    <section id="preview-panel" class="preview-panel" hidden aria-label="Pratinjau media">
+      <div class="preview-panel-head"><div><strong>Preview media</strong><p>Putar di sini tanpa membuka tab baru.</p></div><span class="preview-live-label">Pratinjau</span></div>
+      <video id="media-preview" controls playsinline preload="none" hidden aria-label="Pratinjau video"></video>
     </section>
 
     <section id="gallery-panel" class="gallery-panel" hidden aria-live="polite">

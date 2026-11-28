@@ -1,2 +1,5 @@
-Petik Website v3.5.2
-Compatible API: Petik Universal API v1.6.2
+Petik Website v3.6.0
+Theme: warm cream / ivory / terracotta
+Preview: separate panel, hidden by default, Show / Hide toggle
+Direct links: independent of save success when valid media URL is extracted
+Gallery: per-photo direct link when source image URL is available
